@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Choose a patient | SMART Patient App</title>
+  <script src="https://cdn.jsdelivr.net/npm/fhirclient@3.0.1/bundle/fhir-client.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; line-height: 1.4; }
+    button { font: inherit; padding: 0.5rem 0.9rem; }
+    .error { color: #8a1f1f; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Choose a patient</h1>
+    <p>Search the SMART sandbox and pick one sample patient. This app then signs in as that person.</p>
+    <p><button id="browse" type="button">Browse patients</button></p>
+    <p id="status"></p>
+    <p id="error" class="error"></p>
+    <p><a href="./">Back to the app</a></p>
+  </main>
+  <script>
+    var pickerOrigin = "https://patient-browser.smarthealthit.org";
+
+    document.getElementById("browse").addEventListener("click", choosePatient);
+
+    // The sandbox login dropdown only lists 10 patients. This opens the full
+    // patient browser instead, and sign-in starts only after a person is chosen.
+    function choosePatient() {
+      var popup = window.open(
+        pickerOrigin + "/index.html?config=r4",
+        "patient-picker",
+        "width=1000,height=700"
+      );
+      if (!popup) {
+        showError("The browser blocked the patient window. Allow popups for this site and try again.");
+        return;
+      }
+
+      document.getElementById("browse").disabled = true;
+      document.getElementById("status").textContent = "Pick one patient, then use the browser's submit button.";
+      showError("");
+
+      function onMessage(event) {
+        if (event.origin !== pickerOrigin || !event.data) {
+          return;
+        }
+        if (event.data.type === "ready") {
+          popup.postMessage({
+            type: "config",
+            data: { submitStrategy: "manual", outputMode: "id-list" }
+          }, pickerOrigin);
+          return;
+        }
+        if (event.data.type !== "result" && event.data.type !== "close") {
+          return;
+        }
+
+        window.removeEventListener("message", onMessage);
+        popup.close();
+        document.getElementById("browse").disabled = false;
+
+        var patientId = String(event.data.data || "").split(",")[0].trim();
+        if (!patientId) {
+          document.getElementById("status").textContent = "No patient selected.";
+          return;
+        }
+        signInAs(patientId);
+      }
+
+      window.addEventListener("message", onMessage);
+    }
+
+    function signInAs(patientId) {
+      document.getElementById("status").textContent = "Starting sign-in…";
+      // Name lookup is only so the page can say who was picked. Sign-in
+      // continues even if the open server does not answer.
+      fetch("https://r4.smarthealthit.org/Patient/" + encodeURIComponent(patientId))
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (patient) {
+          if (patient) {
+            document.getElementById("status").textContent = "Signing in as " + formatName(patient) + "…";
+          }
+        })
+        .catch(function () {})
+        .then(function () { authorize(patientId); });
+    }
+
+    function authorize(patientId) {
+      // Slot 2 is the patient id. Slot 5 (the 1) is skip_login, so the sandbox
+      // does not show its 10-person dropdown.
+      var launchOptions = [
+        3, patientId, "", "AUTO",
+        1, 0, 0,
+        "", "", "", "", "", "", "",
+        0, 1, ""
+      ];
+      var sandboxIss = "https://launch.smarthealthit.org/v/r4/sim/"
+        + btoa(JSON.stringify(launchOptions)).replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_")
+        + "/fhir";
+
+      FHIR.oauth2.authorize({
+        clientId: "my_web_app",
+        scope: "launch/patient openid fhirUser patient/Patient.read",
+        redirectUri: "index.html",
+        iss: sandboxIss
+      }).catch(function (error) {
+        showError(error.message || String(error));
+      });
+    }
+
+    function formatName(patient) {
+      var names = Array.isArray(patient.name) ? patient.name : [];
+      var name = names.filter(function (item) { return item.use === "official"; })[0] || names[0];
+      if (!name) {
+        return "the selected patient";
+      }
+      if (name.text) {
+        return name.text;
+      }
+      var given = Array.isArray(name.given) ? name.given.join(" ") : "";
+      var family = name.family || "";
+      return (given + " " + family).trim() || "the selected patient";
+    }
+
+    function showError(message) {
+      document.getElementById("error").textContent = message;
+    }
+  </script>
+</body>
+</html>
